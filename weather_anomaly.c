@@ -5,7 +5,7 @@
 #include <mpi.h>
 
 #define MAX_LINE 1024
-#define MAX_RECORDS 5000
+#define MAX_RECORDS 10000
 
 typedef struct {
     char date[16];
@@ -82,11 +82,11 @@ int main(int argc, char **argv) {
     start_time = MPI_Wtime();
 
     if (rank == 0) {
-        printf("[Master] Memulai pembacaan file Weather_Data.csv...\n");
+        printf("[Master] Memulai pembacaan file dataset_10000_rows.csv...\n");
         fflush(stdout);
 
         full_dataset = (WeatherRecord *)malloc(MAX_RECORDS * sizeof(WeatherRecord));
-        total_records = load_weather_csv("Weather_Data.csv", full_dataset);
+        total_records = load_weather_csv("dataset_10000_rows.csv", full_dataset);
 
         if (total_records > 0) {
             printf("[Master] Berhasil membaca %d data cuaca valid.\n", total_records);
