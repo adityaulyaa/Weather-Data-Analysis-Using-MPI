@@ -911,6 +911,29 @@ Jika validasi gagal, kernel tidak boleh diluncurkan. Program harus mencetak bata
 
 ---
 
+# 17. Diagnosis Kegagalan Proses, MPI, GPU, dan Kernel
+
+Diagnosis dilakukan berurutan agar sumber kegagalan dapat dibedakan:
+
+| Tahap | Pemeriksaan | Keluaran berhasil | Keluaran gagal |
+|---|---|---|---|
+| 1. Peluncuran proses | Jalankan program dengan `mpiexec` dan periksa jumlah rank. | `LAUNCH OK: rank X/Y aktif, host=...` | `LAUNCH ERROR: proses/rank tidak berhasil dibuat.` |
+| 2. Konektivitas MPI | Setiap rank menjalankan `MPI_Barrier` dan pertukaran pesan sederhana. | `MPI OK: semua rank terhubung.` | `MPI ERROR: rank tidak mencapai komunikasi.` |
+| 3. Alokasi GPU | Periksa jumlah GPU, device yang dipilih, dan alokasi array kecil. | `GPU OK: device ... berhasil dialokasikan.` | `GPU ERROR: GPU tidak tersedia atau alokasi gagal.` |
+| 4. Eksekusi kernel | Jalankan operasi CUDA kecil, lalu panggil `synchronize()` untuk memastikan kernel selesai. | `KERNEL OK: eksekusi selesai.` | `KERNEL ERROR: kernel gagal atau menghasilkan error CUDA.` |
+
+Prosedur penghentian:
+
+1. Setiap rank menyimpan status berhasil/gagal dan pesan error.
+2. Status digabungkan dengan `MPI_Allreduce`.
+3. Jika satu rank gagal, rank 0 mencetak penyebabnya.
+4. Semua rank dihentikan menggunakan `MPI_Abort(MPI_COMM_WORLD, 1)` tanpa menunggu collective berikutnya.
+5. Pada proses CUDA, sinkronisasi dan pelepasan memori dilakukan hanya jika masih aman.
+
+Dengan urutan ini, kegagalan peluncuran, MPI, GPU, dan kernel dapat diketahui secara terpisah serta tidak meninggalkan proses yang menunggu.
+
+---
+
 # Kesimpulan Umum
 
 1. `MPI_Project` paling tepat diklasifikasikan sebagai **MIMD berbasis distributed memory**, karena menggunakan banyak proses MPI dengan ruang alamat terpisah dan komunikasi eksplisit melalui `MPI_Bcast`, `MPI_Scatterv`, dan `MPI_Reduce`.
