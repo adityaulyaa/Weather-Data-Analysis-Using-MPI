@@ -853,279 +853,61 @@ Jika validasi gagal, kernel tidak diluncurkan, pesan dicetak oleh rank/proses te
 
 ---
 
-# 12. Verifikasi Perangkat GPU yang Terlihat oleh Setiap Proses saat Scheduler atau Container Membatasi Akses
+# 14. Validasi Batas Block, Grid, Shared Memory, dan Fitur GPU
 
-## Konteks Pertanyaan
+Sebelum kernel CUDA dijalankan, program harus membaca kemampuan GPU lalu membandingkannya dengan konfigurasi kernel.
 
-Dalam sistem cluster, container, atau scheduler seperti SLURM, PBS, Kubernetes, atau Docker, GPU yang terlihat oleh proses dapat dibatasi.
+Yang perlu diperiksa:
 
-Contoh:
+| Komponen | Parameter kernel | Batas perangkat |
+|---|---|---|
+| Jumlah thread per block | `blockDim.x * blockDim.y * blockDim.z` | `maxThreadsPerBlock` |
+| Dimensi block | `blockDim.x/y/z` | `maxThreadsDim` |
+| Dimensi grid | `gridDim.x/y/z` | `maxGridSize` |
+| Shared memory | `shared_memory_bytes` | `sharedMemPerBlock` |
+| Fitur GPU | compute capability | minimal versi yang dibutuhkan kernel |
 
-```bash
-CUDA_VISIBLE_DEVICES=2,3 python main.py
-```
-
-Di dalam proses, GPU fisik 2 dan 3 bisa muncul sebagai ordinal lokal 0 dan 1. Karena itu, program tidak boleh mengasumsikan bahwa ordinal GPU bersifat global dan seragam.
-
----
-
-## Kondisi Aktual Proyek
-
-### MPI_Project
-
-MPI_Project tidak menggunakan GPU, sehingga tidak ada verifikasi GPU.
-
-### CUDA_Project
-
-CUDA_Project menggunakan GPU melalui CuPy, tetapi notebook saat ini belum membuat inventaris eksplisit seperti:
-
-- rank
-- hostname
-- ordinal lokal GPU
-- nama GPU
-- UUID GPU
-- compute capability
-- memory total
-
-Notebook hanya memakai default device CuPy, biasanya device 0 yang terlihat oleh proses.
-
-Karena itu, untuk menjawab kebutuhan pertanyaan, perlu ditambahkan rancangan pemeriksaan/inventaris GPU.
-
----
-
-## Untuk CUDA_Project Single Process
-
-Untuk notebook CUDA saat ini, verifikasi minimal yang bagus adalah:
+Contoh validasi sederhana:
 
 ```python
-import socket
-import cupy as cp
+props = cp.cuda.runtime.getDeviceProperties(0)
 
-hostname = socket.gethostname()
-count = cp.cuda.runtime.getDeviceCount()
+threads_per_block = block_x * block_y * block_z
+if threads_per_block > props["maxThreadsPerBlock"]:
+    raise RuntimeError(
+        f"ERROR: thread per block {threads_per_block} melebihi batas GPU {props['maxThreadsPerBlock']}. "
+        f"Parameter: blockDim=({block_x},{block_y},{block_z})"
+    )
 
-print(f"Hostname: {hostname}")
-print(f"Visible CUDA devices: {count}")
+if grid_x > props["maxGridSize"][0]:
+    raise RuntimeError(
+        f"ERROR: gridDim.x {grid_x} melebihi batas GPU {props['maxGridSize'][0]}."
+    )
 
-for local_ordinal in range(count):
-    props = cp.cuda.runtime.getDeviceProperties(local_ordinal)
-    name = props["name"].decode() if isinstance(props["name"], bytes) else props["name"]
-    major = props["major"]
-    minor = props["minor"]
-    total_mem = props["totalGlobalMem"]
-    pci_bus_id = cp.cuda.runtime.deviceGetPCIBusId(local_ordinal)
+if shared_memory_bytes > props["sharedMemPerBlock"]:
+    raise RuntimeError(
+        f"ERROR: shared memory {shared_memory_bytes} byte melebihi batas {props['sharedMemPerBlock']} byte."
+    )
 
-    print({
-        "hostname": hostname,
-        "local_ordinal": local_ordinal,
-        "gpu_name": name,
-        "compute_capability": f"{major}.{minor}",
-        "total_memory_bytes": total_mem,
-        "pci_bus_id": pci_bus_id,
-    })
-```
-
-Tujuannya:
-
-- Mengetahui GPU apa saja yang terlihat oleh proses Python.
-- Tidak mengasumsikan device global.
-- Menggunakan `local_ordinal`, yaitu ordinal setelah filtering oleh scheduler/container.
-
----
-
-## Untuk MPI + CUDA / Hybrid
-
-Jika CUDA_Project dikembangkan menjadi hybrid MPI+CUDA, setiap rank perlu membuat inventaris sendiri.
-
-Informasi yang harus dicatat:
-
-| Field | Fungsi |
-|---|---|
-| `rank` | Identitas proses MPI global |
-| `local_rank` | Rank lokal pada node yang sama |
-| `hostname` | Nama node |
-| `visible_device_count` | Jumlah GPU yang terlihat oleh proses |
-| `selected_local_ordinal` | GPU lokal yang dipakai rank |
-| `gpu_name` | Nama GPU |
-| `pci_bus_id` | Identitas lokasi PCI |
-| `uuid` | Identitas unik GPU jika tersedia |
-| `compute_capability` | Kemampuan arsitektur GPU |
-| `total_memory` | Kapasitas VRAM |
-
-### Mengapa Tidak Boleh Mengasumsikan Ordinal Global
-
-Misal scheduler memberi:
-
-```text
-Node A punya GPU fisik: 0,1,2,3
-Scheduler memberi rank akses ke GPU fisik 2
-CUDA_VISIBLE_DEVICES=2
-```
-
-Di dalam proses:
-
-```text
-GPU fisik 2 terlihat sebagai cuda:0
-```
-
-Jadi ordinal lokal `0` bukan berarti GPU fisik global `0`.
-
-Karena itu, inventaris harus menyimpan identitas lain seperti PCI bus ID atau UUID.
-
----
-
-## Contoh Inventaris Rank, Hostname, dan GPU dengan mpi4py + CuPy
-
-Untuk Python hybrid MPI+CUDA, contoh pendekatan:
-
-```python
-from mpi4py import MPI
-import socket
-import os
-import cupy as cp
-
-comm = MPI.COMM_WORLD
-rank = comm.Get_rank()
-size = comm.Get_size()
-hostname = socket.gethostname()
-
-visible_count = cp.cuda.runtime.getDeviceCount()
-
-if visible_count == 0:
-    raise RuntimeError(f"Rank {rank} pada {hostname}: tidak ada GPU terlihat")
-
-# Buat local rank berdasarkan hostname
-all_hosts = comm.allgather(hostname)
-local_rank = sum(1 for i in range(rank) if all_hosts[i] == hostname)
-
-selected = local_rank % visible_count
-cp.cuda.Device(selected).use()
-
-props = cp.cuda.runtime.getDeviceProperties(selected)
-name = props["name"].decode() if isinstance(props["name"], bytes) else props["name"]
 major = props["major"]
 minor = props["minor"]
-total_mem = props["totalGlobalMem"]
-pci_bus_id = cp.cuda.runtime.deviceGetPCIBusId(selected)
-
-record = {
-    "rank": rank,
-    "size": size,
-    "hostname": hostname,
-    "local_rank": local_rank,
-    "visible_device_count": visible_count,
-    "selected_local_ordinal": selected,
-    "gpu_name": name,
-    "compute_capability": f"{major}.{minor}",
-    "total_memory_bytes": total_mem,
-    "pci_bus_id": pci_bus_id,
-    "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>"),
-}
-
-records = comm.gather(record, root=0)
-
-if rank == 0:
-    for r in records:
-        print(r)
+if (major, minor) < (7, 0):
+    raise RuntimeError(
+        f"ERROR: compute capability GPU {major}.{minor} tidak memenuhi kebutuhan minimal 7.0."
+    )
 ```
 
-Penjelasan:
-
-- `rank` adalah rank global MPI.
-- `hostname` dipakai untuk mengetahui proses mana berada pada node yang sama.
-- `local_rank` dihitung dari jumlah rank sebelumnya yang memiliki hostname sama.
-- `selected = local_rank % visible_count` memilih GPU berdasarkan ordinal lokal yang terlihat oleh proses.
-- `CUDA_VISIBLE_DEVICES` dicatat untuk diagnosis.
-- `pci_bus_id` dipakai sebagai identitas perangkat yang lebih stabil daripada ordinal lokal.
-
----
-
-## Contoh Output Inventaris
-
-Contoh output yang diharapkan:
+Contoh keluaran error:
 
 ```text
-{
-  'rank': 0,
-  'size': 4,
-  'hostname': 'node-a',
-  'local_rank': 0,
-  'visible_device_count': 2,
-  'selected_local_ordinal': 0,
-  'gpu_name': 'NVIDIA Tesla T4',
-  'compute_capability': '7.5',
-  'total_memory_bytes': 15835660288,
-  'pci_bus_id': '0000:00:04.0',
-  'CUDA_VISIBLE_DEVICES': '2,3'
-}
-{
-  'rank': 1,
-  'size': 4,
-  'hostname': 'node-a',
-  'local_rank': 1,
-  'visible_device_count': 2,
-  'selected_local_ordinal': 1,
-  'gpu_name': 'NVIDIA Tesla T4',
-  'compute_capability': '7.5',
-  'total_memory_bytes': 15835660288,
-  'pci_bus_id': '0000:00:05.0',
-  'CUDA_VISIBLE_DEVICES': '2,3'
-}
+ERROR: thread per block 2048 melebihi batas GPU 1024. Parameter: blockDim=(32,32,2)
 ```
-
-Dari output tersebut, terlihat bahwa ordinal lokal 0 dan 1 adalah GPU yang terlihat oleh proses, bukan selalu ordinal global fisik.
-
----
-
-## Integrasi dengan CUDA_Project Saat Ini
-
-Pada notebook saat ini, bagian berikut:
-
-```python
-chol_matrix_gpu = cp.array(chol_matrix)
-weights_gpu = cp.array(WEIGHTS)
-```
-
-akan memakai device default CuPy. Agar lebih aman, sebelum alokasi GPU sebaiknya dipilih device eksplisit:
-
-```python
-device_id = 0
-cp.cuda.Device(device_id).use()
-```
-
-Namun jika dijalankan di scheduler/container, `device_id = 0` berarti device ordinal lokal yang terlihat oleh proses, bukan GPU global 0. Maka inventaris perlu dicetak sebelum benchmark.
-
----
-
-## Diagnosis Jika GPU Tidak Sesuai
-
-Program sebaiknya berhenti jika:
-
-1. Tidak ada GPU terlihat:
 
 ```text
-ERROR: Rank X pada host Y tidak melihat GPU CUDA apa pun.
-Periksa CUDA_VISIBLE_DEVICES, konfigurasi scheduler, atau konfigurasi container.
+ERROR: shared memory 65536 byte melebihi batas 49152 byte.
 ```
 
-2. Jumlah rank lokal melebihi jumlah GPU dan oversubscription tidak diizinkan:
-
-```text
-ERROR: Host node-a memiliki 4 rank lokal tetapi hanya 2 GPU terlihat.
-Solusi: kurangi rank per node atau izinkan sharing GPU secara eksplisit.
-```
-
-3. Compute capability tidak memenuhi syarat:
-
-```text
-ERROR: GPU pada rank X memiliki compute capability 5.0, minimal yang dibutuhkan 6.0.
-```
-
-4. Driver/runtime tidak cocok:
-
-```text
-ERROR: CUDA driver lebih lama dari runtime CuPy yang digunakan.
-```
+Jika validasi gagal, kernel tidak boleh diluncurkan. Program harus mencetak batas perangkat, parameter yang melanggar, lalu keluar. Jika dijalankan dengan MPI, status validasi tiap rank digabung dengan `MPI_Allreduce`; jika ada rank gagal, semua rank dihentikan dengan `MPI_Abort`.
 
 ---
 
