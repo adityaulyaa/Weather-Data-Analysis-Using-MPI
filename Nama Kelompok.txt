@@ -1,0 +1,12 @@
+Kelompok Paralel Weather Anomaly Detection Using MPI
+Komputasi Tersebar dan Paralel - Kelas C
+
+Nama Anggota :
+1. Aditya Sultonul Ulya	 (24060124120006)
+2. Adelia Clearesta	 (24060124140204) 
+
+Kendala:
+Dalam proses pencarian dataset, kami menggunakan data real cuaca di Australia dengan rentang waktu 2025–2026 yang diperoleh dari Kaggle. Dataset yang tersedia hanya berjumlah beberapa ribu data. Pada pengujian menggunakan lebih dari satu node, proses pembagian data ke beberapa node justru menyebabkan waktu eksekusi menjadi lebih lama. Oleh karena itu, penggunaan pemrosesan paralel dengan pembagian node belum dapat menunjukkan peningkatan efisiensi waktu eksekusi secara signifikan.
+
+Solusi:
+Menggunakan dataset dengan ukuran yang lebih besar agar pembagian data ke beberapa node dapat lebih optimal dan perbedaan waktu eksekusi antara pemrosesan sekuensial dan paralel dapat terlihat dengan lebih jelas.
